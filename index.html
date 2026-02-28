@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>Draggable Ticker</title>
+    <style>
+        :root {
+            --ticker-duration: 50s; /* How long one full scroll takes. Bigger = slower */
+            --ticker-gap: 3rem;     /* Space between each news item */
+            --accent-blue: #2563eb; /* Main blue color */
+        }
+
+        /* Remove default spacing, use border-box for easier math */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, sans-serif; background: #f8fafc; }
+
+        /* Green debug bar at the top that shows scroll position */
+        .status-bar { background: #0f172a; color: #4ade80; font-family: monospace; font-size: 11px; padding: 6px; text-align: center; }
+
+        /* The blue bar that contains everything */
+        .ticker-container {
+            background: var(--accent-blue);
+            color: white;
+            overflow: hidden;       /* Anything outside this box is invisible */
+            display: flex;
+            align-items: center;
+            height: 40px;
+            user-select: none;      /* Stop users from highlighting text */
+            cursor: grab;           /* Show grab hand on hover */
+        }
+
+        /* While dragging, show the closed-hand cursor */
+        .ticker-container.is-dragging { cursor: grabbing; }
+
+        /* Left side: "NEWS" label */
+        .ticker-header {
+            background: var(--accent-blue);
+            z-index: 10;            /* Sit on top of scrolling text */
+            display: flex;
+            align-items: center;
+            height: 100%;
+            box-shadow: 10px 0 15px -5px rgba(0,0,0,0.2);
+            padding: 0 1rem 0 0.75rem;
+        }
+
+        .ticker-label {
+            font-weight: 800;
+            white-space: nowrap;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }
+
+        /* Visible area where news scrolls through */
+        .ticker-window {
+            flex-grow: 1;           /* Fill all remaining space */
+            overflow: hidden;
+            display: flex;
+        }
+
+        /* The moving strip of news items */
+        .ticker-track {
+            display: flex;
+            width: max-content;     /* As wide as all the items need */
+            gap: var(--ticker-gap);
+            padding-left: var(--ticker-gap);
+            white-space: nowrap;
+            animation: loop var(--ticker-duration) linear infinite;
+            will-change: transform; /* Hardware acceleration */
+        }
+
+        /*
+         * ALL pausing is done here in CSS.
+         * Two triggers, same result:
+         *   1. Mouse hovers over the ticker  (desktop)
+         *   2. .is-dragging class added by JS (drag/touch)
+         */
+        .ticker-container:hover .ticker-track,
+        .ticker-track.is-dragging {
+            animation-play-state: paused !important;
+        }
+
+        /* Each clickable news headline */
+        .ticker-item {
+            color: white;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            /* Prevent links from firing while dragging */
+            pointer-events: auto;
+        }
+
+        .ticker-item:hover { text-decoration: underline; }
+
+        /* Disable link clicks while dragging */
+        .ticker-container.is-dragging .ticker-item { pointer-events: none; }
+
+        /*
+         * Scroll from 0% to -50%.
+         * Because the content is duplicated (doubled in JS),
+         * jumping back to 0% looks smooth.
+         */
+        @keyframes loop {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="status-bar">
+        Status: <span id="debugOutput">Initializing...</span>
+    </div>
+
+    <div class="ticker-container" id="tickerContainer">
+        <div class="ticker-header">
+            <div class="ticker-label">NEWS</div>
+        </div>
+
+        <div class="ticker-window">
+            <div id="newsTickerInner" class="ticker-track">
+                <a href="#" class="ticker-item">🚀 Rocket startup lands first reusable booster on a barge</a>
+                <a href="#" class="ticker-item">💡 Dev survey: 62% say they're using fewer dependencies in 2026</a>
+                <a href="#" class="ticker-item">📈 Tech stocks rally after better-than-expected jobs report</a>
+                <a href="#" class="ticker-item">🌍 New right-to-repair bill gains momentum in Congress</a>
+                <a href="#" class="ticker-item">🧠 Man automates his entire job, boss finds out, gets promoted</a>
+                <a href="#" class="ticker-item">⚡ Major browsers now ship native CSS masonry layout</a>
+                <a href="#" class="ticker-item">🔐 Password manager breach exposes 3 million accounts</a>
+                <a href="#" class="ticker-item">🛠️ Solo dev builds $2M SaaS with just HTML and SQLite</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function initDraggableTicker() {
+            'use strict';
+
+            /* ── Elements from the page ── */
+            var ticker    = document.getElementById('newsTickerInner');  // the moving strip
+            var container = document.getElementById('tickerContainer'); // the blue bar
+            var debugUI   = document.getElementById('debugOutput');     // green status text
+
+            /* Name used to save/load scroll position in browser memory */
+            var KEY = 'tickerProgressMs';
+
+            /*
+             * DUPLICATE all news items so the strip is 2x longer.
+             * When the animation reaches -50%, it jumps to 0%.
+             * Both halves are identical so the user sees no jump.
+             */
+            ticker.innerHTML += ticker.innerHTML;
+
+            /* ── State variables ── */
+            var isDragging = false; // true while user is dragging
+            var startX     = 0;    // X position where the drag started
+            var startTime  = 0;    // animation time when the drag started
+            var anim       = null; // the browser's Animation object
+            var durationMs = 0;    // total loop time in ms
+            var dragMoved  = false; // did the pointer actually move? (vs just a click)
+
+            /*
+             * How sensitive the drag feels.
+             * Bigger number = less movement needed.
+             * 5 feels natural for most screens.
+             */
+            var DRAG_SPEED = 5;
+
+            /*
+             * wrapTime(ms)
+             * Keeps the time value inside 0 → durationMs range.
+             * If you drag past the end it wraps to the start (and vice versa).
+             */
+            function wrapTime(ms) {
+                return ((ms % durationMs) + durationMs) % durationMs;
+            }
+
+            /*
+             * onPointerDown — user starts dragging
+             * Records where the finger/mouse started and what time the animation was at.
+             * Uses pointer events so one set of code works for mouse AND touch.
+             */
+            function onPointerDown(e) {
+                if (!anim) return;
+                isDragging = true;
+                dragMoved = false;
+                startX = e.clientX;                   // where the pointer is horizontally
+                startTime = anim.currentTime;         // where the animation is right now
+                ticker.classList.add('is-dragging');   // CSS pauses animation
+                container.classList.add('is-dragging'); // swap cursor to grabbing
+                container.setPointerCapture(e.pointerId); // keep tracking even outside the bar
+            }
+
+            /*
+             * onPointerMove — user is dragging
+             * Calculates how far the pointer moved from the start,
+             * multiplies by DRAG_SPEED, and scrubs the animation by that amount.
+             */
+            function onPointerMove(e) {
+                if (!isDragging) return;
+                var dx = e.clientX - startX; // how many pixels moved from start
+
+                // If user moved more than 3px, count it as a real drag (not a click)
+                if (Math.abs(dx) > 3) dragMoved = true;
+
+                // Convert pixel distance to animation time and apply
+                anim.currentTime = wrapTime(startTime - (dx * DRAG_SPEED));
+            }
+
+            /*
+             * onPointerUp — user stops dragging
+             * Removes dragging state so CSS resumes the auto-scroll.
+             */
+            function onPointerUp() {
+                if (!isDragging) return;
+                isDragging = false;
+                ticker.classList.remove('is-dragging');
+                container.classList.remove('is-dragging');
+            }
+
+            /* ── Attach pointer events to the container ── */
+            container.addEventListener('pointerdown', onPointerDown);
+            container.addEventListener('pointermove', onPointerMove);
+            container.addEventListener('pointerup',   onPointerUp);
+            container.addEventListener('pointercancel', onPointerUp); // handle interrupted touches
+
+            /* Prevent default touch scrolling so swipe works without moving the page */
+            container.addEventListener('touchstart', function (e) { e.preventDefault(); }, { passive: false });
+
+            /*
+             * Block link clicks that happen at the end of a drag.
+             * Without this, releasing a drag on top of a link would open it.
+             */
+            ticker.addEventListener('click', function (e) {
+                if (dragMoved) { e.preventDefault(); dragMoved = false; }
+            });
+
+            /*
+             * startPersistence()
+             * Waits for the CSS animation to be ready, then:
+             *   1. Restores last scroll position from browser memory
+             *   2. Saves scroll position every 100ms so it survives page reload
+             */
+            function startPersistence() {
+                var animations = ticker.getAnimations();
+                if (animations.length === 0) {
+                    requestAnimationFrame(startPersistence);
+                    return;
+                }
+
+                anim = animations[0];
+                durationMs = anim.effect.getComputedTiming().duration;
+
+                /* Restore: pick up where user left off */
+                var savedMs = sessionStorage.getItem(KEY);
+                if (savedMs !== null) {
+                    anim.currentTime = parseFloat(savedMs);
+                }
+
+                /* Save position every 100ms + update debug bar */
+                setInterval(function () {
+                    var currentMs = anim.currentTime % durationMs;
+                    if (!isNaN(currentMs)) {
+                        sessionStorage.setItem(KEY, currentMs.toFixed(0));
+                        var pct = (currentMs / durationMs) * 100;
+                        debugUI.innerText = 'Persistence Active: ' + pct.toFixed(1) + '% complete';
+                    }
+                }, 100);
+            }
+
+            startPersistence();
+        })();
+    </script>
+</body>
+</html>
