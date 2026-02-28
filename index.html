@@ -262,7 +262,7 @@
                     if (!isNaN(currentMs)) {
                         sessionStorage.setItem(KEY, currentMs.toFixed(0));
                         var pct = (currentMs / durationMs) * 100;
-                        debugUI.innerText = 'Persistence Active: ' + pct.toFixed(1) + '% complete';
+                        debugUI.innerText = 'Length: ' + pct.toFixed(1) + '% complete';
                     }
                 }, 100);
             }
