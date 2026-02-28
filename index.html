@@ -161,9 +161,10 @@
             /*
              * How sensitive the drag feels.
              * Bigger number = less movement needed.
-             * 5 feels natural for most screens.
+             * 3 feels natural for most screens.
+             * scale the speed by screen width:
              */
-            var DRAG_SPEED = 5;
+            var DRAG_SPEED = 3 + (3000 / window.innerWidth);
 
             /*
              * wrapTime(ms)
@@ -262,7 +263,7 @@
                     if (!isNaN(currentMs)) {
                         sessionStorage.setItem(KEY, currentMs.toFixed(0));
                         var pct = (currentMs / durationMs) * 100;
-                        debugUI.innerText = 'Length: ' + pct.toFixed(1) + '% complete';
+                        debugUI.innerText = 'Persistence Active: ' + pct.toFixed(1) + '% complete';
                     }
                 }, 100);
             }
